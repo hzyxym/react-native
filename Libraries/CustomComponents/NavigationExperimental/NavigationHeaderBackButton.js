@@ -1,4 +1,11 @@
 /**
+ * Copyright (c) 2013-present, Facebook, Inc.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree. An additional grant
+ * of patent rights can be found in the PATENTS file in the same directory.
+ *
  * The examples provided by Facebook are for non-commercial testing and
  * evaluation purposes only.
  *
@@ -16,29 +23,31 @@
 */
 'use strict';
 
-const React = require('react-native');
-const NavigationContainer = require('NavigationContainer');
-const NavigationRootContainer = require('NavigationRootContainer');
+const React = require('react');
+const ReactNative = require('react-native');
 
 const {
+  I18nManager,
   Image,
   Platform,
   StyleSheet,
   TouchableOpacity,
-} = React;
+} = ReactNative;
 
 type Props = {
-  onNavigate: Function
-}
+  imageStyle?: any,
+  onPress: Function,
+  style?: any,
+};
 
 const NavigationHeaderBackButton = (props: Props) => (
-  <TouchableOpacity style={styles.buttonContainer} onPress={() => props.onNavigate(NavigationRootContainer.getBackAction())}>
-    <Image style={styles.button} source={require('./assets/back-icon.png')} />
+  <TouchableOpacity style={[styles.buttonContainer, props.style]} onPress={props.onPress}>
+    <Image style={[styles.button, props.imageStyle]} source={require('./assets/back-icon.png')} />
   </TouchableOpacity>
 );
 
 NavigationHeaderBackButton.propTypes = {
-  onNavigate: React.PropTypes.func.isRequired
+  onPress: React.PropTypes.func.isRequired
 };
 
 const styles = StyleSheet.create({
@@ -52,8 +61,9 @@ const styles = StyleSheet.create({
     height: 24,
     width: 24,
     margin: Platform.OS === 'ios' ? 10 : 16,
-    resizeMode: 'contain'
+    resizeMode: 'contain',
+    transform: [{scaleX: I18nManager.isRTL ? -1 : 1}],
   }
 });
 
-module.exports = NavigationContainer.create(NavigationHeaderBackButton);
+module.exports = NavigationHeaderBackButton;

@@ -101,12 +101,6 @@ Error: ${e.message}`
           modules.forEach(({id, code}, i) => {
             code = code + '\n\n' + sourceMappingURLs[i];
 
-            require('SourceMapsCache').fetch({
-              text: code,
-              url: sourceURLs[i],
-              sourceMappingURL: sourceMappingURLs[i],
-            });
-
             // on JSC we need to inject from native for sourcemaps to work
             // (Safari doesn't support `sourceMappingURL` nor any variant when
             // evaluating code) but on Chrome we can simply use eval
@@ -115,13 +109,13 @@ Error: ${e.message}`
               : eval;
 
             code = [
-              `__accept(`,
+              '__accept(',
                 `${id},`,
-                `function(global,require,module,exports){`,
+                'function(global,require,module,exports){',
                   `${code}`,
                 '\n},',
                 `${JSON.stringify(inverseDependencies)}`,
-              `);`,
+              ');',
             ].join('');
 
             injectFunction(code, sourceURLs[i]);

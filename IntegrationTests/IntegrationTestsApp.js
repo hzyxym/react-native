@@ -7,10 +7,12 @@
  * of patent rights can be found in the PATENTS file in the same directory.
  *
  * @flow
+ * @providesModule IntegrationTestsApp
  */
 'use strict';
 
-var React = require('react-native');
+var React = require('react');
+var ReactNative = require('react-native');
 var {
   AppRegistry,
   ScrollView,
@@ -18,7 +20,7 @@ var {
   Text,
   TouchableOpacity,
   View,
-} = React;
+} = ReactNative;
 
 // Keep this list in sync with UIExplorerIntegrationTests.m
 var TESTS = [
@@ -28,8 +30,10 @@ var TESTS = [
   require('./LayoutEventsTest'),
   require('./AppEventsTest'),
   require('./SimpleSnapshotTest'),
+  require('./ImageCachePolicyTest'),
   require('./ImageSnapshotTest'),
   require('./PromiseTest'),
+  require('./WebSocketTest'),
 ];
 
 TESTS.forEach(
@@ -41,13 +45,12 @@ require('LoggingTestModule');
 
 type Test = any;
 
-var IntegrationTestsApp = React.createClass({
-  getInitialState: function() {
-    return {
-      test: (null: ?Test),
-    };
-  },
-  render: function() {
+class IntegrationTestsApp extends React.Component {
+  state = {
+    test: (null: ?Test),
+  };
+
+  render() {
     if (this.state.test) {
       return (
         <ScrollView>
@@ -78,7 +81,7 @@ var IntegrationTestsApp = React.createClass({
       </View>
     );
   }
-});
+}
 
 var styles = StyleSheet.create({
   container: {

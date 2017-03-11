@@ -24,6 +24,9 @@ project.xcworkspace
 # Gradle
 /build/
 /Examples/**/android/app/build/
+/Examples/**/android/app/gradle/
+/Examples/**/android/app/gradlew
+/Examples/**/android/app/gradlew.bat
 /ReactAndroid/build/
 
 # Buck
@@ -31,6 +34,7 @@ project.xcworkspace
 buck-out
 /ReactAndroid/src/main/jni/prebuilt/lib/armeabi-v7a/
 /ReactAndroid/src/main/jni/prebuilt/lib/x86/
+/ReactAndroid/src/main/gen
 
 # Android
 .idea
@@ -46,3 +50,9 @@ node_modules
 
 # OS X
 .DS_Store
+
+# Test generated files
+/ReactAndroid/src/androidTest/assets/AndroidTestBundle.js
+*.js.meta
+
+/third-party

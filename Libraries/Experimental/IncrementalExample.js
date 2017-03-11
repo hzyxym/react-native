@@ -16,7 +16,8 @@
  */
 'use strict';
 
-const React = require('react-native');
+const React = require('react');
+const ReactNative = require('react-native');
 const {
   InteractionManager,
   ScrollView,
@@ -24,21 +25,18 @@ const {
   Text,
   TouchableOpacity,
   View,
-} = React;
+} = ReactNative;
 
 const Incremental = require('Incremental');
 const IncrementalGroup = require('IncrementalGroup');
 const IncrementalPresenter = require('IncrementalPresenter');
 
 const JSEventLoopWatchdog = require('JSEventLoopWatchdog');
-const StaticContainer = require('StaticContainer.react');
 
-const performanceNow = require('performanceNow');
+const performanceNow = require('fbjs/lib/performanceNow');
 
 InteractionManager.setDeadline(1000);
 JSEventLoopWatchdog.install({thresholdMS: 200});
-
-const NUM_ITEMS = 20;
 
 let totalWidgets = 0;
 
@@ -123,7 +121,7 @@ class IncrementalExample extends React.Component {
       console.log('onDone:', stats);
     }, 0);
   }
-  render(): ReactElement {
+  render(): React.Element<any> {
     return (
       <IncrementalGroup
         disabled={false}

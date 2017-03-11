@@ -10,7 +10,6 @@
 #import "RCTProfile.h"
 
 #import <dlfcn.h>
-
 #import <libkern/OSAtomic.h>
 #import <mach/mach.h>
 #import <objc/message.h>
@@ -19,20 +18,22 @@
 #import <UIKit/UIKit.h>
 
 #import "RCTAssert.h"
-#import "RCTBridge.h"
 #import "RCTBridge+Private.h"
+#import "RCTBridge.h"
 #import "RCTComponentData.h"
 #import "RCTDefines.h"
+#import "RCTJSCExecutor.h"
 #import "RCTLog.h"
 #import "RCTModuleData.h"
-#import "RCTUtils.h"
 #import "RCTUIManager.h"
-#import "RCTJSCExecutor.h"
+#import "RCTUtils.h"
 
 NSString *const RCTProfileDidStartProfiling = @"RCTProfileDidStartProfiling";
 NSString *const RCTProfileDidEndProfiling = @"RCTProfileDidEndProfiling";
 
-#if RCT_DEV
+const uint64_t RCTProfileTagAlways = 1L << 0;
+
+#if RCT_PROFILE
 
 #pragma mark - Constants
 
@@ -134,22 +135,6 @@ static NSDictionary *RCTProfileGetMemoryUsage(void)
   }
 }
 
-static NSDictionary *RCTProfileMergeArgs(NSDictionary *args0, NSDictionary *args1)
-{
-  args0 = RCTNilIfNull(args0);
-  args1 = RCTNilIfNull(args1);
-
-  if (!args0 && args1) {
-    args0 = args1;
-  } else if (args0 && args1) {
-    NSMutableDictionary *d = [args0 mutableCopy];
-    [d addEntriesFromDictionary:args1];
-    args0 = [d copy];
-  }
-
-  return RCTNullIfNil(args0);
-}
-
 #pragma mark - Module hooks
 
 static const char *RCTProfileProxyClassName(Class class)
@@ -205,16 +190,40 @@ void RCTProfileTrampolineStart(id self, SEL cmd)
    * block.
    */
   Class klass = [self class];
-  RCT_PROFILE_BEGIN_EVENT(0, [NSString stringWithFormat:@"-[%s %s]", class_getName(klass), sel_getName(cmd)], nil);
+  RCT_PROFILE_BEGIN_EVENT(RCTProfileTagAlways, ([NSString stringWithFormat:@"-[%s %s]", class_getName(klass), sel_getName(cmd)]), nil);
 }
 
 RCT_EXTERN void RCTProfileTrampolineEnd(void);
 void RCTProfileTrampolineEnd(void)
 {
-  RCT_PROFILE_END_EVENT(0, @"objc_call,modules,auto", nil);
+  RCT_PROFILE_END_EVENT(RCTProfileTagAlways, @"objc_call,modules,auto");
 }
 
-static void RCTProfileHookInstance(id instance)
+static UIView *(*originalCreateView)(RCTComponentData *, SEL, NSNumber *);
+static UIView *RCTProfileCreateView(RCTComponentData *self, SEL _cmd, NSNumber *tag)
+{
+  UIView *view = originalCreateView(self, _cmd, tag);
+  RCTProfileHookInstance(view);
+  return view;
+}
+
+static void RCTProfileHookUIManager(RCTUIManager *uiManager)
+{
+  dispatch_async(dispatch_get_main_queue(), ^{
+    for (id view in [uiManager valueForKey:@"viewRegistry"]) {
+      RCTProfileHookInstance([uiManager viewForReactTag:view]);
+    }
+
+    Method createView = class_getInstanceMethod([RCTComponentData class], @selector(createViewWithTag:));
+
+    if (method_getImplementation(createView) != (IMP)RCTProfileCreateView) {
+      originalCreateView = (typeof(originalCreateView))method_getImplementation(createView);
+      method_setImplementation(createView, (IMP)RCTProfileCreateView);
+    }
+  });
+}
+
+void RCTProfileHookInstance(id instance)
 {
   Class moduleClass = object_getClass(instance);
 
@@ -279,18 +288,10 @@ static void RCTProfileHookInstance(id instance)
 
   objc_registerClassPair(proxyClass);
   object_setClass(instance, proxyClass);
-}
 
-static UIView *(*originalCreateView)(RCTComponentData *, SEL, NSNumber *);
-
-RCT_EXTERN UIView *RCTProfileCreateView(RCTComponentData *self, SEL _cmd, NSNumber *tag);
-UIView *RCTProfileCreateView(RCTComponentData *self, SEL _cmd, NSNumber *tag)
-{
-  UIView *view = originalCreateView(self, _cmd, tag);
-
-  RCTProfileHookInstance(view);
-
-  return view;
+  if (moduleClass == [RCTUIManager class]) {
+    RCTProfileHookUIManager((RCTUIManager *)instance);
+  }
 }
 
 void RCTProfileHookModules(RCTBridge *bridge)
@@ -304,24 +305,16 @@ void RCTProfileHookModules(RCTBridge *bridge)
   }
 #pragma clang diagnostic pop
 
+  RCT_PROFILE_BEGIN_EVENT(RCTProfileTagAlways, @"RCTProfileHookModules", nil);
   for (RCTModuleData *moduleData in [bridge valueForKey:@"moduleDataByID"]) {
-    [bridge dispatchBlock:^{
-      RCTProfileHookInstance(moduleData.instance);
-    } queue:moduleData.methodQueue];
+    // Only hook modules with an instance, to prevent initializing everything
+    if ([moduleData hasInstance]) {
+      [bridge dispatchBlock:^{
+        RCTProfileHookInstance(moduleData.instance);
+      } queue:moduleData.methodQueue];
+    }
   }
-
-  dispatch_async(dispatch_get_main_queue(), ^{
-    for (id view in [bridge.uiManager valueForKey:@"viewRegistry"]) {
-      RCTProfileHookInstance([bridge.uiManager viewForReactTag:view]);
-    }
-
-    Method createView = class_getInstanceMethod([RCTComponentData class], @selector(createViewWithTag:));
-
-    if (method_getImplementation(createView) != (IMP)RCTProfileCreateView) {
-      originalCreateView = (typeof(originalCreateView))method_getImplementation(createView);
-      method_setImplementation(createView, (IMP)RCTProfileCreateView);
-    }
-  });
+  RCT_PROFILE_END_EVENT(RCTProfileTagAlways, @"");
 }
 
 static void RCTProfileUnhookInstance(id instance)
@@ -337,17 +330,22 @@ void RCTProfileUnhookModules(RCTBridge *bridge)
 
   dispatch_group_enter(RCTProfileGetUnhookGroup());
 
-  for (RCTModuleData *moduleData in [bridge valueForKey:@"moduleDataByID"]) {
-    RCTProfileUnhookInstance(moduleData.instance);
+  NSDictionary *moduleDataByID = [bridge valueForKey:@"moduleDataByID"];
+  for (RCTModuleData *moduleData in moduleDataByID) {
+    if ([moduleData hasInstance]) {
+      RCTProfileUnhookInstance(moduleData.instance);
+    }
   }
 
-  dispatch_async(dispatch_get_main_queue(), ^{
-    for (id view in [bridge.uiManager valueForKey:@"viewRegistry"]) {
-      RCTProfileUnhookInstance(view);
-    }
+  if ([bridge moduleIsInitialized:[RCTUIManager class]]) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      for (id view in [bridge.uiManager valueForKey:@"viewRegistry"]) {
+        RCTProfileUnhookInstance(view);
+      }
 
-    dispatch_group_leave(RCTProfileGetUnhookGroup());
-  });
+      dispatch_group_leave(RCTProfileGetUnhookGroup());
+    });
+  }
 }
 
 #pragma mark - Private ObjC class only used for the vSYNC CADisplayLink target
@@ -359,7 +357,7 @@ void RCTProfileUnhookModules(RCTBridge *bridge)
 
 + (void)vsync:(CADisplayLink *)displayLink
 {
-  RCTProfileImmediateEvent(0, @"VSYNC", displayLink.timestamp, 'g');
+  RCTProfileImmediateEvent(RCTProfileTagAlways, @"VSYNC", displayLink.timestamp, 'g');
 }
 
 + (void)reload
@@ -382,9 +380,13 @@ void RCTProfileUnhookModules(RCTBridge *bridge)
                atomically:YES
                  encoding:NSUTF8StringEncoding
                     error:nil];
+#if !TARGET_OS_TV
       UIActivityViewController *activityViewController = [[UIActivityViewController alloc] initWithActivityItems:@[[NSURL fileURLWithPath:outFile]]
                                                                                            applicationActivities:nil];
-      activityViewController.completionHandler = ^(__unused NSString *activityType, __unused BOOL completed) {
+      activityViewController.completionWithItemsHandler = ^(__unused UIActivityType activityType,
+                                                            __unused BOOL completed,
+                                                            __unused NSArray *items,
+                                                            __unused NSError *error) {
         RCTProfileControlsWindow.hidden = NO;
       };
       RCTProfileControlsWindow.hidden = YES;
@@ -393,6 +395,7 @@ void RCTProfileUnhookModules(RCTBridge *bridge)
                                                                                                  animated:YES
                                                                                                completion:nil];
       });
+#endif
     });
   } else {
     RCTProfileInit(RCTProfilingBridge());
@@ -456,8 +459,7 @@ void RCTProfileInit(RCTBridge *bridge)
 
   // Set up thread ordering
   dispatch_async(RCTProfileGetQueue(), ^{
-    NSString *shadowQueue = @(dispatch_queue_get_label([[bridge uiManager] methodQueue]));
-    NSArray *orderedThreads = @[@"JS async", RCTJSCThreadName, shadowQueue, @"main"];
+    NSArray *orderedThreads = @[@"JS async", @"RCTPerformanceLogger", RCTJSCThreadName, @(RCTUIManagerQueueName), @"main"];
     [orderedThreads enumerateObjectsUsingBlock:^(NSString *thread, NSUInteger idx, __unused BOOL *stop) {
       RCTProfileAddEvent(RCTProfileTraceEvents,
         @"ph": @"M", // metadata event
@@ -532,22 +534,21 @@ void _RCTProfileBeginEvent(
   NSString *name,
   NSDictionary *args
 ) {
-
   CHECK();
-
-  RCTAssertThread(RCTProfileGetQueue(), @"Must be called RCTProfile queue");;
 
   if (callbacks != NULL) {
     callbacks->begin_section(tag, name.UTF8String, args.count, RCTProfileSystraceArgsFromNSDictionary(args));
     return;
   }
 
-  NSMutableArray *events = RCTProfileGetThreadEvents(calleeThread);
-  [events addObject:@[
-    RCTProfileTimestamp(time),
-    name,
-    RCTNullIfNil(args),
-  ]];
+  dispatch_async(RCTProfileGetQueue(), ^{
+    NSMutableArray *events = RCTProfileGetThreadEvents(calleeThread);
+    [events addObject:@[
+      RCTProfileTimestamp(time),
+      name,
+      RCTNullIfNil(args),
+    ]];
+  });
 }
 
 void _RCTProfileEndEvent(
@@ -555,37 +556,35 @@ void _RCTProfileEndEvent(
   NSString *threadName,
   NSTimeInterval time,
   uint64_t tag,
-  NSString *category,
-  NSDictionary *args
+  NSString *category
 ) {
   CHECK();
 
-  RCTAssertThread(RCTProfileGetQueue(), @"Must be called RCTProfile queue");;
-
   if (callbacks != NULL) {
-    callbacks->end_section(tag, args.count, RCTProfileSystraceArgsFromNSDictionary(args));
+    callbacks->end_section(tag, 0, nil);
     return;
   }
 
-  NSMutableArray<NSArray *> *events = RCTProfileGetThreadEvents(calleeThread);
-  NSArray *event = events.lastObject;
-  [events removeLastObject];
+  dispatch_async(RCTProfileGetQueue(), ^{
+    NSMutableArray<NSArray *> *events = RCTProfileGetThreadEvents(calleeThread);
+    NSArray *event = events.lastObject;
+    [events removeLastObject];
 
-  if (!event) {
-    return;
-  }
+    if (!event) {
+      return;
+    }
 
-  NSNumber *start = event[0];
-
-  RCTProfileAddEvent(RCTProfileTraceEvents,
-    @"tid": threadName,
-    @"name": event[1],
-    @"cat": category,
-    @"ph": @"X",
-    @"ts": start,
-    @"dur": @(RCTProfileTimestamp(time).doubleValue - start.doubleValue),
-    @"args": RCTProfileMergeArgs(event[2], args),
-  );
+    NSNumber *start = event[0];
+    RCTProfileAddEvent(RCTProfileTraceEvents,
+      @"tid": threadName,
+      @"name": event[1],
+      @"cat": category,
+      @"ph": @"X",
+      @"ts": start,
+      @"dur": @(RCTProfileTimestamp(time).doubleValue - start.doubleValue),
+      @"args": event[2],
+    );
+  });
 }
 
 NSUInteger RCTProfileBeginAsyncEvent(
@@ -620,13 +619,12 @@ void RCTProfileEndAsyncEvent(
   NSString *category,
   NSUInteger cookie,
   NSString *name,
-  NSString *threadName,
-  NSDictionary *args
+  NSString *threadName
 ) {
   CHECK();
 
   if (callbacks != NULL) {
-    callbacks->end_async_section(tag, name.UTF8String, (int)(cookie % INT_MAX), args.count, RCTProfileSystraceArgsFromNSDictionary(args));
+    callbacks->end_async_section(tag, name.UTF8String, (int)(cookie % INT_MAX), 0, nil);
     return;
   }
 
@@ -645,7 +643,7 @@ void RCTProfileEndAsyncEvent(
         @"ph": @"X",
         @"ts": event[0],
         @"dur": @(endTimestamp.doubleValue - [event[0] doubleValue]),
-        @"args": RCTProfileMergeArgs(event[2], args),
+        @"args": event[2],
       );
       [RCTProfileOngoingEvents removeObjectForKey:@(cookie)];
     }
@@ -679,26 +677,26 @@ void RCTProfileImmediateEvent(
   });
 }
 
-NSNumber *_RCTProfileBeginFlowEvent(void)
+NSUInteger _RCTProfileBeginFlowEvent(void)
 {
   static NSUInteger flowID = 0;
 
-  CHECK(@0);
+  CHECK(0);
 
+  NSUInteger cookie = ++flowID;
   if (callbacks != NULL) {
-    // flow events not supported yet
-    return @0;
+    callbacks->begin_async_flow(1, "flow", (int)cookie);
+    return cookie;
   }
 
   NSTimeInterval time = CACurrentMediaTime();
-  NSNumber *currentID = @(++flowID);
   NSString *threadName = RCTCurrentThreadName();
 
   dispatch_async(RCTProfileGetQueue(), ^{
     RCTProfileAddEvent(RCTProfileTraceEvents,
       @"tid": threadName,
       @"name": @"flow",
-      @"id": currentID,
+      @"id": @(cookie),
       @"cat": @"flow",
       @"ph": @"s",
       @"ts": RCTProfileTimestamp(time),
@@ -706,14 +704,15 @@ NSNumber *_RCTProfileBeginFlowEvent(void)
 
   });
 
-  return currentID;
+  return cookie;
 }
 
-void _RCTProfileEndFlowEvent(NSNumber *flowID)
+void _RCTProfileEndFlowEvent(NSUInteger cookie)
 {
   CHECK();
 
   if (callbacks != NULL) {
+    callbacks->end_async_flow(1, "flow", (int)cookie);
     return;
   }
 
@@ -724,7 +723,7 @@ void _RCTProfileEndFlowEvent(NSNumber *flowID)
     RCTProfileAddEvent(RCTProfileTraceEvents,
       @"tid": threadName,
       @"name": @"flow",
-      @"id": flowID,
+      @"id": @(cookie),
       @"cat": @"flow",
       @"ph": @"f",
       @"ts": RCTProfileTimestamp(time),
@@ -758,6 +757,7 @@ void RCTProfileSendResult(RCTBridge *bridge, NSString *route, NSData *data)
                                                  encoding:NSUTF8StringEncoding];
 
        if (message.length) {
+#if !TARGET_OS_TV
          dispatch_async(dispatch_get_main_queue(), ^{
            [[[UIAlertView alloc] initWithTitle:@"Profile"
                                        message:message
@@ -765,6 +765,7 @@ void RCTProfileSendResult(RCTBridge *bridge, NSString *route, NSData *data)
                              cancelButtonTitle:@"OK"
                              otherButtonTitles:nil] show];
          });
+#endif
        }
      }
    }];

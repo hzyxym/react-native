@@ -1,5 +1,26 @@
 /**
- * Copyright 2004-present Facebook. All Rights Reserved.
+ * Copyright (c) 2015, Facebook, Inc.  All rights reserved.
+ *
+ * Facebook, Inc. ("Facebook") owns all right, title and interest, including
+ * all intellectual property and other proprietary rights, in and to the React
+ * Native CustomComponents software (the "Software").  Subject to your
+ * compliance with these terms, you are hereby granted a non-exclusive,
+ * worldwide, royalty-free copyright license to (1) use and copy the Software;
+ * and (2) reproduce and distribute the Software as part of your own software
+ * ("Your Software").  Facebook reserves all rights not expressly granted to
+ * you in this license agreement.
+ *
+ * THE SOFTWARE AND DOCUMENTATION, IF ANY, ARE PROVIDED "AS IS" AND ANY EXPRESS
+ * OR IMPLIED WARRANTIES (INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE) ARE DISCLAIMED.
+ * IN NO EVENT SHALL FACEBOOK OR ITS AFFILIATES, OFFICERS, DIRECTORS OR
+ * EMPLOYEES BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+ * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+ * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+ * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THE SOFTWARE, EVEN IF
+ * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  * @providesModule NavigationRouteStack
  * @flow
@@ -61,12 +82,10 @@ class RouteStack {
     this._index = index;
   }
 
-  /* $FlowFixMe - get/set properties not yet supported */
   get size(): number {
     return this._routeNodes.size;
   }
 
-  /* $FlowFixMe - get/set properties not yet supported */
   get index(): number {
     return this._index;
   }
@@ -117,7 +136,7 @@ class RouteStack {
     return this._routeNodes.findIndex(finder, this);
   }
 
-  slice(begin: ?number, end: ?number): RouteStack {
+  slice(begin?: number, end?: number): RouteStack {
     var routeNodes = this._routeNodes.slice(begin, end);
     var index = Math.min(this._index, routeNodes.size - 1);
     return this._update(index, routeNodes);
@@ -137,7 +156,7 @@ class RouteStack {
     invariant(this._routeNodes.indexOf(route) === -1, 'route must be unique');
 
     // When pushing, removes the rest of the routes past the current index.
-    var routeNodes = this._routeNodes.withMutations((list: List) => {
+    var routeNodes = this._routeNodes.withMutations((list: List<RouteNode>) => {
       list.slice(0, this._index + 1).push(new RouteNode(route));
     });
 
@@ -149,7 +168,7 @@ class RouteStack {
    * excluding the last index in this stack.
    */
   pop(): RouteStack {
-    invariant(this._routeNodes.size > 1, 'shoud not pop routeNodes stack to empty');
+    invariant(this._routeNodes.size > 1, 'should not pop routeNodes stack to empty');
 
     // When popping, removes the rest of the routes past the current index.
     var routeNodes = this._routeNodes.slice(0, this._index);
@@ -234,7 +253,7 @@ class RouteStack {
     return new Set(items);
   }
 
-  _update(index: number, routeNodes: List): RouteStack {
+  _update(index: number, routeNodes: List<RouteNode>): RouteStack {
     if (this._index === index && this._routeNodes === routeNodes) {
       return this;
     }

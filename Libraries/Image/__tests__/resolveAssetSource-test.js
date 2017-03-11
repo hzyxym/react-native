@@ -9,10 +9,10 @@
 'use strict';
 
 jest
-  .dontMock('AssetRegistry')
-  .dontMock('AssetSourceResolver')
-  .dontMock('../resolveAssetSource')
-  .dontMock('../../../local-cli/bundle/assetPathUtils');
+  .unmock('AssetRegistry')
+  .unmock('AssetSourceResolver')
+  .unmock('../resolveAssetSource')
+  .unmock('../../../local-cli/bundle/assetPathUtils');
 
 var AssetRegistry = require('AssetRegistry');
 var Platform = require('Platform');
@@ -26,7 +26,7 @@ function expectResolvesAsset(input, expectedSource) {
 
 describe('resolveAssetSource', () => {
   beforeEach(() => {
-    jest.resetModuleRegistry();
+    jest.resetModules();
   });
 
   it('returns same source for simple static and network images', () => {

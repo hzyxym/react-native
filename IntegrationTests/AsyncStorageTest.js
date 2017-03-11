@@ -7,16 +7,18 @@
  * of patent rights can be found in the PATENTS file in the same directory.
  *
  * @flow
+ * @providesModule AsyncStorageTest
  */
 'use strict';
 
-var React = require('react-native');
+var React = require('react');
+var ReactNative = require('react-native');
 var {
   AsyncStorage,
   Text,
   View,
-} = React;
-var { TestModule } = React.NativeModules;
+} = ReactNative;
+var { TestModule } = ReactNative.NativeModules;
 
 var deepDiffer = require('deepDiffer');
 
@@ -166,22 +168,22 @@ function testOptimizedMultiGet() {
 }
 
 
-var AsyncStorageTest = React.createClass({
-  getInitialState() {
-    return {
-      messages: 'Initializing...',
-      done: false,
-    };
-  },
+class AsyncStorageTest extends React.Component {
+  state = {
+    messages: 'Initializing...',
+    done: false,
+  };
 
   componentDidMount() {
-    done = () => this.setState({done: true}, TestModule.markTestCompleted);
+    done = () => this.setState({done: true}, () => {
+      TestModule.markTestCompleted();
+    });
     updateMessage = (msg) => {
       this.setState({messages: this.state.messages.concat('\n' + msg)});
       DEBUG && console.log(msg);
     };
     AsyncStorage.clear(testSetAndGet);
-  },
+  }
 
   render() {
     return (
@@ -194,7 +196,7 @@ var AsyncStorageTest = React.createClass({
       </View>
     );
   }
-});
+}
 
 AsyncStorageTest.displayName = 'AsyncStorageTest';
 

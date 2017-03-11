@@ -14,50 +14,59 @@
 #import "RCTConvert.h"
 #import "RCTEventDispatcher.h"
 #import "RCTLog.h"
-#import "RCTRefreshControl.h"
 #import "RCTUIManager.h"
 #import "RCTUtils.h"
 #import "UIView+Private.h"
 #import "UIView+React.h"
 
-CGFloat const ZINDEX_DEFAULT = 0;
-CGFloat const ZINDEX_STICKY_HEADER = 50;
+#if !TARGET_OS_TV
+#import "RCTRefreshControl.h"
+#endif
 
 @interface RCTScrollEvent : NSObject <RCTEvent>
 
-- (instancetype)initWithType:(RCTScrollEventType)type
-                    reactTag:(NSNumber *)reactTag
-                  scrollView:(UIScrollView *)scrollView
-                    userData:(NSDictionary *)userData NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithEventName:(NSString *)eventName
+                         reactTag:(NSNumber *)reactTag
+                       scrollView:(UIScrollView *)scrollView
+                         userData:(NSDictionary *)userData
+                    coalescingKey:(uint16_t)coalescingKey NS_DESIGNATED_INITIALIZER;
 
 @end
 
 @implementation RCTScrollEvent
 {
-  RCTScrollEventType _type;
   UIScrollView *_scrollView;
   NSDictionary *_userData;
+  uint16_t _coalescingKey;
 }
 
 @synthesize viewTag = _viewTag;
+@synthesize eventName = _eventName;
 
-- (instancetype)initWithType:(RCTScrollEventType)type
-                    reactTag:(NSNumber *)reactTag
-                  scrollView:(UIScrollView *)scrollView
-                    userData:(NSDictionary *)userData
+- (instancetype)initWithEventName:(NSString *)eventName
+                         reactTag:(NSNumber *)reactTag
+                       scrollView:(UIScrollView *)scrollView
+                         userData:(NSDictionary *)userData
+                    coalescingKey:(uint16_t)coalescingKey
 {
   RCTAssertParam(reactTag);
 
   if ((self = [super init])) {
-    _type = type;
+    _eventName = [eventName copy];
     _viewTag = reactTag;
     _scrollView = scrollView;
     _userData = userData;
+    _coalescingKey = coalescingKey;
   }
   return self;
 }
 
 RCT_NOT_IMPLEMENTED(- (instancetype)init)
+
+- (uint16_t)coalescingKey
+{
+  return _coalescingKey;
+}
 
 - (NSDictionary *)body
 {
@@ -90,20 +99,6 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
   }
 
   return body;
-}
-
-- (NSString *)eventName
-{
-  static NSString *events[] = {
-    @"scrollBeginDrag",
-    @"scroll",
-    @"scrollEndDrag",
-    @"momentumScrollBegin",
-    @"momentumScrollEnd",
-    @"scrollAnimationEnd",
-  };
-
-  return events[_type];
 }
 
 - (BOOL)canCoalesce
@@ -139,26 +134,31 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
 /**
  * Include a custom scroll view subclass because we want to limit certain
  * default UIKit behaviors such as textFields automatically scrolling
- * scroll views that contain them and support sticky headers.
+ * scroll views that contain them.
  */
 @interface RCTCustomScrollView : UIScrollView<UIGestureRecognizerDelegate>
 
-@property (nonatomic, copy) NSIndexSet *stickyHeaderIndices;
 @property (nonatomic, assign) BOOL centerContent;
-@property (nonatomic, strong) RCTRefreshControl *refreshControl;
+#if !TARGET_OS_TV
+@property (nonatomic, strong) RCTRefreshControl *rctRefreshControl;
+#endif
 
 @end
 
 
 @implementation RCTCustomScrollView
-{
-  __weak UIView *_dockedHeaderView;
-}
 
 - (instancetype)initWithFrame:(CGRect)frame
 {
   if ((self = [super initWithFrame:frame])) {
     [self.panGestureRecognizer addTarget:self action:@selector(handleCustomPan:)];
+
+    if ([self respondsToSelector:@selector(setSemanticContentAttribute:)]) {
+      // We intentionaly force `UIScrollView`s `semanticContentAttribute` to `LTR` here
+      // because this attribute affects a position of vertical scrollbar; we don't want this
+      // scrollbar flip because we also flip it with whole `UIScrollView` flip.
+      self.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
+    }
   }
   return self;
 }
@@ -191,7 +191,7 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
     self.panGestureRecognizer.enabled = YES;
     // TODO: If mid bounce, animate the scroll view to a non-bounced position
     // while disabling (but only if `stopScrollInteractionIfJSHasResponder` was
-    // called *during* a `pan`. Currently, it will just snap into place which
+    // called *during* a `pan`). Currently, it will just snap into place which
     // is not so bad either.
     // Another approach:
     // self.scrollEnabled = NO;
@@ -264,113 +264,53 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
   if (contentView && _centerContent) {
     CGSize subviewSize = contentView.frame.size;
     CGSize scrollViewSize = self.bounds.size;
-    if (subviewSize.width < scrollViewSize.width) {
+    if (subviewSize.width <= scrollViewSize.width) {
       contentOffset.x = -(scrollViewSize.width - subviewSize.width) / 2.0;
     }
-    if (subviewSize.height < scrollViewSize.height) {
+    if (subviewSize.height <= scrollViewSize.height) {
       contentOffset.y = -(scrollViewSize.height - subviewSize.height) / 2.0;
     }
   }
   super.contentOffset = contentOffset;
 }
 
-- (void)dockClosestSectionHeader
+static inline BOOL isRectInvalid(CGRect rect) {
+  return isnan(rect.origin.x) || isinf(rect.origin.x) ||
+    isnan(rect.origin.y) || isinf(rect.origin.y) ||
+    isnan(rect.size.width) || isinf(rect.size.width) ||
+    isnan(rect.size.height) || isinf(rect.size.height);
+}
+
+- (void)setBounds:(CGRect)bounds
 {
-  UIView *contentView = [self contentView];
-  CGFloat scrollTop = self.bounds.origin.y + self.contentInset.top;
-  // If the RefreshControl is refreshing, remove it's height so sticky headers are
-  // positioned properly when scrolling down while refreshing.
-  if (self.refreshControl != nil && self.refreshControl.refreshing) {
-    scrollTop -= self.refreshControl.frame.size.height;
-  }
-
-  // Find the section headers that need to be docked
-  __block UIView *previousHeader = nil;
-  __block UIView *currentHeader = nil;
-  __block UIView *nextHeader = nil;
-  NSUInteger subviewCount = contentView.reactSubviews.count;
-  [_stickyHeaderIndices enumerateIndexesWithOptions:0 usingBlock:
-   ^(NSUInteger idx, BOOL *stop) {
-
-    // If the subviews are out of sync with the sticky header indices don't
-    // do anything.
-    if (idx >= subviewCount) {
-      *stop = YES;
-      return;
-    }
-
-    UIView *header = contentView.reactSubviews[idx];
-
-    // If nextHeader not yet found, search for docked headers
-    if (!nextHeader) {
-      CGFloat height = header.bounds.size.height;
-      CGFloat top = header.center.y - height * header.layer.anchorPoint.y;
-      if (top > scrollTop) {
-        nextHeader = header;
-      } else {
-        previousHeader = currentHeader;
-        currentHeader = header;
-      }
-    }
-
-    // Reset transforms for header views
-    header.transform = CGAffineTransformIdentity;
-    header.layer.zPosition = ZINDEX_DEFAULT;
-
-  }];
-
-  // If no docked header, bail out
-  if (!currentHeader) {
+  if (isRectInvalid(bounds)) {
+    RCTLogError(@"Attempted to set an invalid bounds to inner scrollview: %@", NSStringFromCGRect(bounds));
     return;
   }
 
-  // Adjust current header to hug the top of the screen
-  CGFloat currentFrameHeight = currentHeader.bounds.size.height;
-  CGFloat currentFrameTop = currentHeader.center.y - currentFrameHeight * currentHeader.layer.anchorPoint.y;
-  CGFloat yOffset = scrollTop - currentFrameTop;
-  if (nextHeader) {
-    // The next header nudges the current header out of the way when it reaches
-    // the top of the screen
-    CGFloat nextFrameHeight = nextHeader.bounds.size.height;
-    CGFloat nextFrameTop = nextHeader.center.y - nextFrameHeight * nextHeader.layer.anchorPoint.y;
-    CGFloat overlap = currentFrameHeight - (nextFrameTop - scrollTop);
-    yOffset -= MAX(0, overlap);
-  }
-  currentHeader.transform = CGAffineTransformMakeTranslation(0, yOffset);
-  currentHeader.layer.zPosition = ZINDEX_STICKY_HEADER;
-  _dockedHeaderView = currentHeader;
-
-  if (previousHeader) {
-    // The previous header sits right above the currentHeader's initial position
-    // so it scrolls away nicely once the currentHeader has locked into place
-    CGFloat previousFrameHeight = previousHeader.bounds.size.height;
-    CGFloat targetCenter = currentFrameTop - previousFrameHeight * (1.0 - previousHeader.layer.anchorPoint.y);
-    yOffset = targetCenter - previousHeader.center.y;
-    previousHeader.transform = CGAffineTransformMakeTranslation(0, yOffset);
-    previousHeader.layer.zPosition = ZINDEX_STICKY_HEADER;
-  }
+  [super setBounds:bounds];
 }
 
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event
+- (void)setFrame:(CGRect)frame
 {
-  if (_dockedHeaderView && [self pointInside:point withEvent:event]) {
-    CGPoint convertedPoint = [_dockedHeaderView convertPoint:point fromView:self];
-    UIView *hitView = [_dockedHeaderView hitTest:convertedPoint withEvent:event];
-    if (hitView) {
-      return hitView;
-    }
+  if (isRectInvalid(frame)) {
+    RCTLogError(@"Attempted to set an invalid frame to inner scrollview: %@", NSStringFromCGRect(frame));
+    return;
   }
-  return [super hitTest:point withEvent:event];
+
+  [super setFrame:frame];
 }
 
-- (void)setRefreshControl:(RCTRefreshControl *)refreshControl
+#if !TARGET_OS_TV
+- (void)setRctRefreshControl:(RCTRefreshControl *)refreshControl
 {
-  if (_refreshControl) {
-    [_refreshControl removeFromSuperview];
+  if (_rctRefreshControl) {
+    [_rctRefreshControl removeFromSuperview];
   }
-  _refreshControl = refreshControl;
-  [self addSubview:_refreshControl];
+  _rctRefreshControl = refreshControl;
+  [self addSubview:_rctRefreshControl];
 }
+#endif //TARGET_OS_TV
 
 @end
 
@@ -383,9 +323,14 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
   NSMutableArray<NSValue *> *_cachedChildFrames;
   BOOL _allowNextScrollNoMatterWhat;
   CGRect _lastClippedToRect;
+  uint16_t _coalescingKey;
+  NSString *_lastEmittedEventName;
+  NSHashTable *_scrollListeners;
+  // The last non-zero value of translationAlongAxis from scrollViewWillEndDragging.
+  // Tells if user was scrolling forward or backward and is used to determine a correct
+  // snap index when the user stops scrolling with a tap on the scroll view.
+  CGFloat _lastNonZeroTranslationAlongAxis;
 }
-
-@synthesize nativeScrollDelegate = _nativeScrollDelegate;
 
 - (instancetype)initWithEventDispatcher:(RCTEventDispatcher *)eventDispatcher
 {
@@ -402,8 +347,10 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
     _lastClippedToRect = CGRectNull;
 
     _scrollEventThrottle = 0.0;
-    _lastScrollDispatchTime = CACurrentMediaTime();
+    _lastScrollDispatchTime = 0;
     _cachedChildFrames = [NSMutableArray new];
+
+    _scrollListeners = [NSHashTable weakObjectsHashTable];
 
     [self addSubview:_scrollView];
   }
@@ -413,39 +360,59 @@ RCT_NOT_IMPLEMENTED(- (instancetype)init)
 RCT_NOT_IMPLEMENTED(- (instancetype)initWithFrame:(CGRect)frame)
 RCT_NOT_IMPLEMENTED(- (instancetype)initWithCoder:(NSCoder *)aDecoder)
 
+static inline void RCTApplyTranformationAccordingLayoutDirection(UIView *view, UIUserInterfaceLayoutDirection layoutDirection) {
+  view.transform =
+    layoutDirection == UIUserInterfaceLayoutDirectionLeftToRight ?
+      CGAffineTransformIdentity :
+      CGAffineTransformMakeScale(-1, 1);
+}
+
+- (void)setReactLayoutDirection:(UIUserInterfaceLayoutDirection)layoutDirection
+{
+  [super setReactLayoutDirection:layoutDirection];
+
+  RCTApplyTranformationAccordingLayoutDirection(_scrollView, layoutDirection);
+  RCTApplyTranformationAccordingLayoutDirection(_contentView, layoutDirection);
+}
+
 - (void)setRemoveClippedSubviews:(__unused BOOL)removeClippedSubviews
 {
   // Does nothing
 }
 
-- (void)insertReactSubview:(UIView *)view atIndex:(__unused NSInteger)atIndex
+- (void)insertReactSubview:(UIView *)view atIndex:(NSInteger)atIndex
 {
+  [super insertReactSubview:view atIndex:atIndex];
+#if !TARGET_OS_TV
   if ([view isKindOfClass:[RCTRefreshControl class]]) {
-    _scrollView.refreshControl = (RCTRefreshControl*)view;
-  } else {
+    [_scrollView setRctRefreshControl:(RCTRefreshControl *)view];
+  } else
+#endif
+  {
     RCTAssert(_contentView == nil, @"RCTScrollView may only contain a single subview");
     _contentView = view;
+    RCTApplyTranformationAccordingLayoutDirection(_contentView, self.reactLayoutDirection);
     [_scrollView addSubview:view];
   }
 }
 
 - (void)removeReactSubview:(UIView *)subview
 {
+  [super removeReactSubview:subview];
+#if !TARGET_OS_TV
   if ([subview isKindOfClass:[RCTRefreshControl class]]) {
-    _scrollView.refreshControl = nil;
-  } else {
+    [_scrollView setRctRefreshControl:nil];
+  } else
+#endif
+  {
     RCTAssert(_contentView == subview, @"Attempted to remove non-existent subview");
     _contentView = nil;
-    [subview removeFromSuperview];
   }
 }
 
-- (NSArray<UIView *> *)reactSubviews
+- (void)didUpdateReactSubviews
 {
-  if (_contentView && _scrollView.refreshControl) {
-    return @[_contentView, _scrollView.refreshControl];
-  }
-  return _contentView ? @[_contentView] : @[];
+  // Do nothing, as subviews are managed by `insertReactSubview:atIndex:`
 }
 
 - (BOOL)centerContent
@@ -456,18 +423,6 @@ RCT_NOT_IMPLEMENTED(- (instancetype)initWithCoder:(NSCoder *)aDecoder)
 - (void)setCenterContent:(BOOL)centerContent
 {
   _scrollView.centerContent = centerContent;
-}
-
-- (NSIndexSet *)stickyHeaderIndices
-{
-  return _scrollView.stickyHeaderIndices;
-}
-
-- (void)setStickyHeaderIndices:(NSIndexSet *)headerIndices
-{
-  RCTAssert(_scrollView.contentSize.width <= self.frame.size.width,
-           @"sticky headers are not supported with horizontal scrolled views");
-  _scrollView.stickyHeaderIndices = headerIndices;
 }
 
 - (void)setClipsToBounds:(BOOL)clipsToBounds
@@ -491,11 +446,13 @@ RCT_NOT_IMPLEMENTED(- (instancetype)initWithCoder:(NSCoder *)aDecoder)
   _scrollView.frame = self.bounds;
   _scrollView.contentOffset = originalOffset;
 
+#if !TARGET_OS_TV
   // Adjust the refresh control frame if the scrollview layout changes.
-  RCTRefreshControl *refreshControl = _scrollView.refreshControl;
+  RCTRefreshControl *refreshControl = _scrollView.rctRefreshControl;
   if (refreshControl && refreshControl.refreshing) {
     refreshControl.frame = (CGRect){_scrollView.contentOffset, {_scrollView.frame.size.width, refreshControl.frame.size.height}};
   }
+#endif
 
   [self updateClippedSubviews];
 }
@@ -517,6 +474,7 @@ RCT_NOT_IMPLEMENTED(- (instancetype)initWithCoder:(NSCoder *)aDecoder)
 
   const BOOL shouldClipAgain =
     CGRectIsNull(_lastClippedToRect) ||
+    !CGRectEqualToRect(_lastClippedToRect, bounds) ||
     (scrollsHorizontally && (bounds.size.width < leeway || fabs(_lastClippedToRect.origin.x - bounds.origin.x) >= leeway)) ||
     (scrollsVertically && (bounds.size.height < leeway || fabs(_lastClippedToRect.origin.y - bounds.origin.y) >= leeway));
 
@@ -529,6 +487,10 @@ RCT_NOT_IMPLEMENTED(- (instancetype)initWithCoder:(NSCoder *)aDecoder)
 
 - (void)setContentInset:(UIEdgeInsets)contentInset
 {
+  if (UIEdgeInsetsEqualToEdgeInsets(contentInset, _contentInset)) {
+    return;
+  }
+
   CGPoint contentOffset = _scrollView.contentOffset;
 
   _contentInset = contentInset;
@@ -539,6 +501,11 @@ RCT_NOT_IMPLEMENTED(- (instancetype)initWithCoder:(NSCoder *)aDecoder)
   _scrollView.contentOffset = contentOffset;
 }
 
+- (BOOL)isHorizontal:(UIScrollView *)scrollView
+{
+  return scrollView.contentSize.width > self.frame.size.width;
+}
+
 - (void)scrollToOffset:(CGPoint)offset
 {
   [self scrollToOffset:offset animated:YES];
@@ -547,6 +514,28 @@ RCT_NOT_IMPLEMENTED(- (instancetype)initWithCoder:(NSCoder *)aDecoder)
 - (void)scrollToOffset:(CGPoint)offset animated:(BOOL)animated
 {
   if (!CGPointEqualToPoint(_scrollView.contentOffset, offset)) {
+    // Ensure at least one scroll event will fire
+    _allowNextScrollNoMatterWhat = YES;
+    [_scrollView setContentOffset:offset animated:animated];
+  }
+}
+
+/**
+ * If this is a vertical scroll view, scrolls to the bottom.
+ * If this is a horizontal scroll view, scrolls to the right.
+ */
+- (void)scrollToEnd:(BOOL)animated
+{
+  BOOL isHorizontal = [self isHorizontal:_scrollView];
+  CGPoint offset;
+  if (isHorizontal) {
+    offset = CGPointMake(_scrollView.contentSize.width - _scrollView.bounds.size.width, 0);
+  } else {
+    offset = CGPointMake(0, _scrollView.contentSize.height - _scrollView.bounds.size.height);
+  }
+  if (!CGPointEqualToPoint(_scrollView.contentOffset, offset)) {
+    // Ensure at least one scroll event will fire
+    _allowNextScrollNoMatterWhat = YES;
     [_scrollView setContentOffset:offset animated:animated];
   }
 }
@@ -565,28 +554,40 @@ RCT_NOT_IMPLEMENTED(- (instancetype)initWithCoder:(NSCoder *)aDecoder)
 
 #pragma mark - ScrollView delegate
 
-#define RCT_SCROLL_EVENT_HANDLER(delegateMethod, eventName) \
-- (void)delegateMethod:(UIScrollView *)scrollView           \
-{                                                           \
-  [_eventDispatcher sendScrollEventWithType:eventName reactTag:self.reactTag scrollView:scrollView userData:nil]; \
-  if ([_nativeScrollDelegate respondsToSelector:_cmd]) { \
-    [_nativeScrollDelegate delegateMethod:scrollView]; \
-  } \
+#define RCT_SEND_SCROLL_EVENT(_eventName, _userData) { \
+  NSString *eventName = NSStringFromSelector(@selector(_eventName)); \
+  [self sendScrollEventWithName:eventName scrollView:_scrollView userData:_userData]; \
 }
 
 #define RCT_FORWARD_SCROLL_EVENT(call) \
-if ([_nativeScrollDelegate respondsToSelector:_cmd]) { \
-  [_nativeScrollDelegate call]; \
+for (NSObject<UIScrollViewDelegate> *scrollViewListener in _scrollListeners) { \
+  if ([scrollViewListener respondsToSelector:_cmd]) { \
+    [scrollViewListener call]; \
+  } \
 }
 
-RCT_SCROLL_EVENT_HANDLER(scrollViewDidEndScrollingAnimation, RCTScrollEventTypeEndDeceleration)
-RCT_SCROLL_EVENT_HANDLER(scrollViewWillBeginDecelerating, RCTScrollEventTypeStartDeceleration)
-RCT_SCROLL_EVENT_HANDLER(scrollViewDidEndDecelerating, RCTScrollEventTypeEndDeceleration)
-RCT_SCROLL_EVENT_HANDLER(scrollViewDidZoom, RCTScrollEventTypeMove)
+#define RCT_SCROLL_EVENT_HANDLER(delegateMethod, eventName) \
+- (void)delegateMethod:(UIScrollView *)scrollView           \
+{                                                           \
+  RCT_SEND_SCROLL_EVENT(eventName, nil);                    \
+  RCT_FORWARD_SCROLL_EVENT(delegateMethod:scrollView);      \
+}
+
+RCT_SCROLL_EVENT_HANDLER(scrollViewWillBeginDecelerating, onMomentumScrollBegin)
+RCT_SCROLL_EVENT_HANDLER(scrollViewDidZoom, onScroll)
+
+- (void)addScrollListener:(NSObject<UIScrollViewDelegate> *)scrollListener
+{
+  [_scrollListeners addObject:scrollListener];
+}
+
+- (void)removeScrollListener:(NSObject<UIScrollViewDelegate> *)scrollListener
+{
+  [_scrollListeners removeObject:scrollListener];
+}
 
 - (void)scrollViewDidScroll:(UIScrollView *)scrollView
 {
-  [_scrollView dockClosestSectionHeader];
   [self updateClippedSubviews];
 
   NSTimeInterval now = CACurrentMediaTime();
@@ -604,10 +605,7 @@ RCT_SCROLL_EVENT_HANDLER(scrollViewDidZoom, RCTScrollEventTypeMove)
     NSArray<NSDictionary *> *childFrames = [self calculateChildFramesData];
 
     // Dispatch event
-    [_eventDispatcher sendScrollEventWithType:RCTScrollEventTypeMove
-                                     reactTag:self.reactTag
-                                   scrollView:scrollView
-                                     userData:@{@"updatedChildFrames": childFrames}];
+    RCT_SEND_SCROLL_EVENT(onScroll, (@{@"updatedChildFrames": childFrames}));
 
     // Update dispatch time
     _lastScrollDispatchTime = now;
@@ -625,12 +623,12 @@ RCT_SCROLL_EVENT_HANDLER(scrollViewDidZoom, RCTScrollEventTypeMove)
       // Check if new or changed
       CGRect newFrame = subview.frame;
       BOOL frameChanged = NO;
-      if (_cachedChildFrames.count <= idx) {
+      if (self->_cachedChildFrames.count <= idx) {
         frameChanged = YES;
-        [_cachedChildFrames addObject:[NSValue valueWithCGRect:newFrame]];
-      } else if (!CGRectEqualToRect(newFrame, [_cachedChildFrames[idx] CGRectValue])) {
+        [self->_cachedChildFrames addObject:[NSValue valueWithCGRect:newFrame]];
+      } else if (!CGRectEqualToRect(newFrame, [self->_cachedChildFrames[idx] CGRectValue])) {
         frameChanged = YES;
-        _cachedChildFrames[idx] = [NSValue valueWithCGRect:newFrame];
+        self->_cachedChildFrames[idx] = [NSValue valueWithCGRect:newFrame];
       }
 
       // Create JS frame object
@@ -651,14 +649,12 @@ RCT_SCROLL_EVENT_HANDLER(scrollViewDidZoom, RCTScrollEventTypeMove)
 - (void)scrollViewWillBeginDragging:(UIScrollView *)scrollView
 {
   _allowNextScrollNoMatterWhat = YES; // Ensure next scroll event is recorded, regardless of throttle
-  [_eventDispatcher sendScrollEventWithType:RCTScrollEventTypeStart reactTag:self.reactTag scrollView:scrollView userData:nil];
+  RCT_SEND_SCROLL_EVENT(onScrollBeginDrag, nil);
   RCT_FORWARD_SCROLL_EVENT(scrollViewWillBeginDragging:scrollView);
 }
 
 - (void)scrollViewWillEndDragging:(UIScrollView *)scrollView withVelocity:(CGPoint)velocity targetContentOffset:(inout CGPoint *)targetContentOffset
 {
-
-
   // snapToInterval
   // An alternative to enablePaging which allows setting custom stopping intervals,
   // smaller than a full page size. Often seen in apps which feature horizonally
@@ -668,7 +664,7 @@ RCT_SCROLL_EVENT_HANDLER(scrollViewDidZoom, RCTScrollEventTypeMove)
     CGFloat snapToIntervalF = (CGFloat)self.snapToInterval;
 
     // Find which axis to snap
-    BOOL isHorizontal = (scrollView.contentSize.width > self.frame.size.width);
+    BOOL isHorizontal = [self isHorizontal:scrollView];
 
     // What is the current offset?
     CGFloat targetContentOffsetAlongAxis = isHorizontal ? targetContentOffset->x : targetContentOffset->y;
@@ -688,7 +684,14 @@ RCT_SCROLL_EVENT_HANDLER(scrollViewDidZoom, RCTScrollEventTypeMove)
 
     // Pick snap point based on direction and proximity
     NSInteger snapIndex = floor((targetContentOffsetAlongAxis + alignmentOffset) / snapToIntervalF);
-    snapIndex = (translationAlongAxis < 0) ? snapIndex + 1 : snapIndex;
+    BOOL isScrollingForward = translationAlongAxis < 0;
+    BOOL wasScrollingForward = translationAlongAxis == 0 && _lastNonZeroTranslationAlongAxis < 0;
+    if (isScrollingForward || wasScrollingForward) {
+      snapIndex = snapIndex + 1;
+    }
+    if (translationAlongAxis != 0) {
+      _lastNonZeroTranslationAlongAxis = translationAlongAxis;
+    }
     CGFloat newTargetContentOffset = ( snapIndex * snapToIntervalF ) - alignmentOffset;
 
     // Set new targetContentOffset
@@ -709,8 +712,7 @@ RCT_SCROLL_EVENT_HANDLER(scrollViewDidZoom, RCTScrollEventTypeMove)
       @"y": @(targetContentOffset->y)
     }
   };
-  [_eventDispatcher sendScrollEventWithType:RCTScrollEventTypeEnd reactTag:self.reactTag scrollView:scrollView userData:userData];
-
+  RCT_SEND_SCROLL_EVENT(onScrollEndDrag, userData);
   RCT_FORWARD_SCROLL_EVENT(scrollViewWillEndDragging:scrollView withVelocity:velocity targetContentOffset:targetContentOffset);
 }
 
@@ -721,20 +723,45 @@ RCT_SCROLL_EVENT_HANDLER(scrollViewDidZoom, RCTScrollEventTypeMove)
 
 - (void)scrollViewWillBeginZooming:(UIScrollView *)scrollView withView:(UIView *)view
 {
-  [_eventDispatcher sendScrollEventWithType:RCTScrollEventTypeStart reactTag:self.reactTag scrollView:scrollView userData:nil];
+  RCT_SEND_SCROLL_EVENT(onScrollBeginDrag, nil);
   RCT_FORWARD_SCROLL_EVENT(scrollViewWillBeginZooming:scrollView withView:view);
 }
 
 - (void)scrollViewDidEndZooming:(UIScrollView *)scrollView withView:(UIView *)view atScale:(CGFloat)scale
 {
-  [_eventDispatcher sendScrollEventWithType:RCTScrollEventTypeEnd reactTag:self.reactTag scrollView:scrollView userData:nil];
+  RCT_SEND_SCROLL_EVENT(onScrollEndDrag, nil);
   RCT_FORWARD_SCROLL_EVENT(scrollViewDidEndZooming:scrollView withView:view atScale:scale);
+}
+
+- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView
+{
+  // Fire a final scroll event
+  _allowNextScrollNoMatterWhat = YES;
+  [self scrollViewDidScroll:scrollView];
+
+  // Fire the end deceleration event
+  RCT_SEND_SCROLL_EVENT(onMomentumScrollEnd, nil);
+  RCT_FORWARD_SCROLL_EVENT(scrollViewDidEndDecelerating:scrollView);
+}
+
+- (void)scrollViewDidEndScrollingAnimation:(UIScrollView *)scrollView
+{
+  // Fire a final scroll event
+  _allowNextScrollNoMatterWhat = YES;
+  [self scrollViewDidScroll:scrollView];
+
+  // Fire the end deceleration event
+  RCT_SEND_SCROLL_EVENT(onMomentumScrollEnd, nil); //TODO: shouldn't this be onScrollAnimationEnd?
+  RCT_FORWARD_SCROLL_EVENT(scrollViewDidEndScrollingAnimation:scrollView);
 }
 
 - (BOOL)scrollViewShouldScrollToTop:(UIScrollView *)scrollView
 {
-  if ([_nativeScrollDelegate respondsToSelector:_cmd]) {
-    return [_nativeScrollDelegate scrollViewShouldScrollToTop:scrollView];
+  for (NSObject<UIScrollViewDelegate> *scrollListener in _scrollListeners) {
+    if ([scrollListener respondsToSelector:_cmd] &&
+        ![scrollListener scrollViewShouldScrollToTop:scrollView]) {
+      return NO;
+    }
   }
   return YES;
 }
@@ -806,16 +833,9 @@ RCT_SCROLL_EVENT_HANDLER(scrollViewDidZoom, RCTScrollEventTypeMove)
 {
   if (!CGSizeEqualToSize(_contentSize, CGSizeZero)) {
     return _contentSize;
-  } else if (!_contentView) {
-    return CGSizeZero;
-  } else {
-    CGSize singleSubviewSize = _contentView.frame.size;
-    CGPoint singleSubviewPosition = _contentView.frame.origin;
-    return (CGSize){
-      singleSubviewSize.width + singleSubviewPosition.x,
-      singleSubviewSize.height + singleSubviewPosition.y
-    };
   }
+
+  return _contentView.frame.size;
 }
 
 - (void)reactBridgeDidFinishTransaction
@@ -830,21 +850,6 @@ RCT_SCROLL_EVENT_HANDLER(scrollViewDidZoom, RCTScrollEventTypeMove)
     _scrollView.contentSize = contentSize;
     _scrollView.contentOffset = newOffset;
   }
-
-  if (RCT_DEBUG) {
-    // Validate that sticky headers are not out of range.
-    NSUInteger subviewCount = _scrollView.contentView.reactSubviews.count;
-    NSUInteger lastIndex = NSNotFound;
-    if (_scrollView.stickyHeaderIndices != nil) {
-      lastIndex = _scrollView.stickyHeaderIndices.lastIndex;
-    }
-    if (lastIndex != NSNotFound && lastIndex >= subviewCount) {
-      RCTLogWarn(@"Sticky header index %zd was outside the range {0, %zd}",
-                 lastIndex, subviewCount);
-    }
-  }
-
-  [_scrollView dockClosestSectionHeader];
 }
 
 // Note: setting several properties of UIScrollView has the effect of
@@ -875,56 +880,46 @@ RCT_SET_AND_PRESERVE_OFFSET(setIndicatorStyle, indicatorStyle, UIScrollViewIndic
 RCT_SET_AND_PRESERVE_OFFSET(setKeyboardDismissMode, keyboardDismissMode, UIScrollViewKeyboardDismissMode)
 RCT_SET_AND_PRESERVE_OFFSET(setMaximumZoomScale, maximumZoomScale, CGFloat)
 RCT_SET_AND_PRESERVE_OFFSET(setMinimumZoomScale, minimumZoomScale, CGFloat)
-RCT_SET_AND_PRESERVE_OFFSET(setPagingEnabled, isPagingEnabled, BOOL)
 RCT_SET_AND_PRESERVE_OFFSET(setScrollEnabled, isScrollEnabled, BOOL)
+#if !TARGET_OS_TV
+RCT_SET_AND_PRESERVE_OFFSET(setPagingEnabled, isPagingEnabled, BOOL)
 RCT_SET_AND_PRESERVE_OFFSET(setScrollsToTop, scrollsToTop, BOOL)
+#endif
 RCT_SET_AND_PRESERVE_OFFSET(setShowsHorizontalScrollIndicator, showsHorizontalScrollIndicator, BOOL)
 RCT_SET_AND_PRESERVE_OFFSET(setShowsVerticalScrollIndicator, showsVerticalScrollIndicator, BOOL)
 RCT_SET_AND_PRESERVE_OFFSET(setZoomScale, zoomScale, CGFloat);
 RCT_SET_AND_PRESERVE_OFFSET(setScrollIndicatorInsets, scrollIndicatorInsets, UIEdgeInsets);
 
-- (void)setOnRefreshStart:(RCTDirectEventBlock)onRefreshStart
+- (void)sendScrollEventWithName:(NSString *)eventName
+                     scrollView:(UIScrollView *)scrollView
+                       userData:(NSDictionary *)userData
 {
-  if (!onRefreshStart) {
-    _onRefreshStart = nil;
-    _scrollView.refreshControl = nil;
-    return;
+  if (![_lastEmittedEventName isEqualToString:eventName]) {
+    _coalescingKey++;
+    _lastEmittedEventName = [eventName copy];
   }
-  _onRefreshStart = [onRefreshStart copy];
-
-  if (!_scrollView.refreshControl) {
-    RCTRefreshControl *refreshControl = [RCTRefreshControl new];
-    [refreshControl addTarget:self action:@selector(refreshControlValueChanged) forControlEvents:UIControlEventValueChanged];
-    _scrollView.refreshControl = refreshControl;
-  }
-}
-
-- (void)refreshControlValueChanged
-{
-  if (self.onRefreshStart) {
-    self.onRefreshStart(nil);
-  }
-}
-
-- (void)endRefreshing
-{
-  [_scrollView.refreshControl endRefreshing];
+  RCTScrollEvent *scrollEvent = [[RCTScrollEvent alloc] initWithEventName:eventName
+                                                                 reactTag:self.reactTag
+                                                               scrollView:scrollView
+                                                                 userData:userData
+                                                            coalescingKey:_coalescingKey];
+  [_eventDispatcher sendEvent:scrollEvent];
 }
 
 @end
 
 @implementation RCTEventDispatcher (RCTScrollView)
 
-- (void)sendScrollEventWithType:(RCTScrollEventType)type
-                       reactTag:(NSNumber *)reactTag
-                     scrollView:(UIScrollView *)scrollView
-                       userData:(NSDictionary *)userData
+- (void)sendFakeScrollEvent:(NSNumber *)reactTag
 {
-  RCTScrollEvent *scrollEvent = [[RCTScrollEvent alloc] initWithType:type
-                                                            reactTag:reactTag
-                                                          scrollView:scrollView
-                                                            userData:userData];
-  [self sendEvent:scrollEvent];
+  // Use the selector here in case the onScroll block property is ever renamed
+  NSString *eventName = NSStringFromSelector(@selector(onScroll));
+  RCTScrollEvent *fakeScrollEvent = [[RCTScrollEvent alloc] initWithEventName:eventName
+                                                                     reactTag:reactTag
+                                                                   scrollView:nil
+                                                                     userData:nil
+                                                                coalescingKey:0];
+  [self sendEvent:fakeScrollEvent];
 }
 
 @end

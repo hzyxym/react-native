@@ -12,19 +12,20 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  *
  * @flow
+ * @providesModule SearchScreen
  */
 'use strict';
 
-var React = require('react-native');
+var React = require('react');
+var ReactNative = require('react-native');
 var {
-  ActivityIndicatorIOS,
+  ActivityIndicator,
   ListView,
   Platform,
-  ProgressBarAndroid,
   StyleSheet,
   Text,
   View,
-} = React;
+} = ReactNative;
 var TimerMixin = require('react-timer-mixin');
 
 var invariant = require('fbjs/lib/invariant');
@@ -122,15 +123,6 @@ var SearchScreen = React.createClass({
 
     fetch(this._urlForQueryAndPage(query, 1))
       .then((response) => response.json())
-      .catch((error) => {
-        LOADING[query] = false;
-        resultsCache.dataForQuery[query] = undefined;
-
-        this.setState({
-          dataSource: this.getDataSource([]),
-          isLoading: false,
-        });
-      })
       .then((responseData) => {
         LOADING[query] = false;
         resultsCache.totalForQuery[query] = responseData.total;
@@ -145,6 +137,15 @@ var SearchScreen = React.createClass({
         this.setState({
           isLoading: false,
           dataSource: this.getDataSource(responseData.movies),
+        });
+      })
+      .catch((error) => {
+        LOADING[query] = false;
+        resultsCache.dataForQuery[query] = undefined;
+
+        this.setState({
+          dataSource: this.getDataSource([]),
+          isLoading: false,
         });
       })
       .done();
@@ -249,15 +250,8 @@ var SearchScreen = React.createClass({
     if (!this.hasMore() || !this.state.isLoadingTail) {
       return <View style={styles.scrollSpinner} />;
     }
-    if (Platform.OS === 'ios') {
-      return <ActivityIndicatorIOS style={styles.scrollSpinner} />;
-    } else {
-      return (
-        <View  style={{alignItems: 'center'}}>
-          <ProgressBarAndroid styleAttr="Large"/>
-        </View>
-      );
-    }
+
+    return <ActivityIndicator style={styles.scrollSpinner} />;
   },
 
   renderSeparator: function(
@@ -306,7 +300,7 @@ var SearchScreen = React.createClass({
         onEndReached={this.onEndReached}
         automaticallyAdjustContentInsets={false}
         keyboardDismissMode="on-drag"
-        keyboardShouldPersistTaps={true}
+        keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       />;
 
@@ -325,8 +319,8 @@ var SearchScreen = React.createClass({
   },
 });
 
-var NoMovies = React.createClass({
-  render: function() {
+class NoMovies extends React.Component {
+  render() {
     var text = '';
     if (this.props.filter) {
       text = `No results for "${this.props.filter}"`;
@@ -342,7 +336,7 @@ var NoMovies = React.createClass({
       </View>
     );
   }
-});
+}
 
 var styles = StyleSheet.create({
   container: {

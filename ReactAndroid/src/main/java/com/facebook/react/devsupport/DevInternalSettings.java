@@ -16,7 +16,7 @@ import android.content.SharedPreferences;
 import android.preference.PreferenceManager;
 
 import com.facebook.react.common.annotations.VisibleForTesting;
-import com.facebook.react.modules.debug.DeveloperSettings;
+import com.facebook.react.modules.debug.interfaces.DeveloperSettings;
 
 /**
  * Helper class for accessing developers settings that should not be accessed outside of the package
@@ -36,14 +36,15 @@ public class DevInternalSettings implements
   private static final String PREFS_RELOAD_ON_JS_CHANGE_KEY = "reload_on_js_change";
   private static final String PREFS_INSPECTOR_DEBUG_KEY = "inspector_debug";
   private static final String PREFS_HOT_MODULE_REPLACEMENT_KEY = "hot_module_replacement";
+  private static final String PREFS_REMOTE_JS_DEBUG_KEY = "remote_js_debug";
 
   private final SharedPreferences mPreferences;
-  private final DevSupportManager mDebugManager;
+  private final Listener mListener;
 
   public DevInternalSettings(
       Context applicationContext,
-      DevSupportManager debugManager) {
-    mDebugManager = debugManager;
+      Listener listener) {
+    mListener = listener;
     mPreferences = PreferenceManager.getDefaultSharedPreferences(applicationContext);
     mPreferences.registerOnSharedPreferenceChangeListener(this);
   }
@@ -77,11 +78,13 @@ public class DevInternalSettings implements
   }
 
   public void onSharedPreferenceChanged(SharedPreferences sharedPreferences, String key) {
-    if (PREFS_FPS_DEBUG_KEY.equals(key) ||
-        PREFS_RELOAD_ON_JS_CHANGE_KEY.equals(key) ||
-        PREFS_JS_DEV_MODE_DEBUG_KEY.equals(key) ||
-        PREFS_JS_MINIFY_DEBUG_KEY.equals(key)) {
-      mDebugManager.reloadSettings();
+    if (mListener != null) {
+      if (PREFS_FPS_DEBUG_KEY.equals(key) ||
+          PREFS_RELOAD_ON_JS_CHANGE_KEY.equals(key) ||
+          PREFS_JS_DEV_MODE_DEBUG_KEY.equals(key) ||
+          PREFS_JS_MINIFY_DEBUG_KEY.equals(key)) {
+        mListener.onInternalSettingsChanged();
+      }
     }
   }
 
@@ -107,5 +110,19 @@ public class DevInternalSettings implements
 
   public void setElementInspectorEnabled(boolean enabled) {
     mPreferences.edit().putBoolean(PREFS_INSPECTOR_DEBUG_KEY, enabled).apply();
+  }
+
+  @Override
+  public boolean isRemoteJSDebugEnabled() {
+    return mPreferences.getBoolean(PREFS_REMOTE_JS_DEBUG_KEY, false);
+  }
+
+  @Override
+  public void setRemoteJSDebugEnabled(boolean remoteJSDebugEnabled) {
+    mPreferences.edit().putBoolean(PREFS_REMOTE_JS_DEBUG_KEY, remoteJSDebugEnabled).apply();
+  }
+
+  public interface Listener {
+    void onInternalSettingsChanged();
   }
 }

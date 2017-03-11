@@ -7,18 +7,20 @@
  * of patent rights can be found in the PATENTS file in the same directory.
  *
  * @flow
+ * @providesModule TimersTest
  */
 'use strict';
 
-var React = require('react-native');
+var React = require('react');
+var ReactNative = require('react-native');
 var TimerMixin = require('react-timer-mixin');
 
 var {
   StyleSheet,
   Text,
   View,
-} = React;
-var { TestModule  } = React.NativeModules;
+} = ReactNative;
+var { TestModule  } = ReactNative.NativeModules;
 
 var TimersTest = React.createClass({
   mixins: [TimerMixin],
@@ -34,7 +36,7 @@ var TimersTest = React.createClass({
   },
 
   componentDidMount() {
-    this.testSetTimeout0();
+    this.setTimeout(this.testSetTimeout0, 1000);
   },
 
   testSetTimeout0() {
@@ -119,7 +121,9 @@ var TimersTest = React.createClass({
   },
 
   done() {
-    this.setState({done: true}, TestModule.markTestCompleted);
+    this.setState({done: true}, () => {
+      TestModule.markTestCompleted();
+    });
   },
 
   render() {

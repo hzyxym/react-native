@@ -11,7 +11,7 @@
  */
 'use strict';
 
-var PropTypes = require('ReactPropTypes');
+var {PropTypes} = require('React');
 var UIManager = require('UIManager');
 
 var createStrictShapeTypeChecker = require('createStrictShapeTypeChecker');
@@ -40,19 +40,19 @@ var animChecker = createStrictShapeTypeChecker({
   initialVelocity: PropTypes.number,
   type: PropTypes.oneOf(
     Object.keys(Types)
-  ),
+  ).isRequired,
   property: PropTypes.oneOf( // Only applies to create/delete
     Object.keys(Properties)
   ),
 });
 
 type Anim = {
-  duration?: number;
-  delay?: number;
-  springDamping?: number;
-  initialVelocity?: number;
-  type?: $Enum<typeof TypesEnum>;
-  property?: $Enum<typeof PropertiesEnum>;
+  duration?: number,
+  delay?: number,
+  springDamping?: number,
+  initialVelocity?: number,
+  type?: $Enum<typeof TypesEnum>,
+  property?: $Enum<typeof PropertiesEnum>,
 }
 
 var configChecker = createStrictShapeTypeChecker({
@@ -63,14 +63,16 @@ var configChecker = createStrictShapeTypeChecker({
 });
 
 type Config = {
-  duration: number;
-  create?: Anim;
-  update?: Anim;
-  delete?: Anim;
+  duration: number,
+  create?: Anim,
+  update?: Anim,
+  delete?: Anim,
 }
 
 function configureNext(config: Config, onAnimationDidEnd?: Function) {
-  configChecker({config}, 'config', 'LayoutAnimation.configureNext');
+  if (__DEV__) {
+    configChecker({config}, 'config', 'LayoutAnimation.configureNext');
+  }
   UIManager.configureNextLayoutAnimation(
     config, onAnimationDidEnd || function() {}, function() { /* unused */ }
   );
@@ -85,6 +87,10 @@ function create(duration: number, type, creationProp): Config {
     },
     update: {
       type,
+    },
+    delete: {
+      type,
+      property: creationProp,
     },
   };
 }
@@ -106,6 +112,10 @@ var Presets = {
       type: Types.spring,
       springDamping: 0.4,
     },
+    delete: {
+      type: Types.linear,
+      property: Properties.opacity,
+    },
   },
 };
 
@@ -113,8 +123,11 @@ var Presets = {
  * Automatically animates views to their new positions when the
  * next layout happens.
  *
- * A common way to use this API is to call `LayoutAnimation.configureNext`
- * before calling `setState`.
+ * A common way to use this API is to call it before calling `setState`.
+ *
+ * Note that in order to get this to work on **Android** you need to set the following flags via `UIManager`:
+ *
+ *     UIManager.setLayoutAnimationEnabledExperimental && UIManager.setLayoutAnimationEnabledExperimental(true);
  */
 var LayoutAnimation = {
   /**

@@ -8,16 +8,17 @@
  *
  * @providesModule HeaderLinks
  */
+'use strict';
 
-var React = require('React');
 var AlgoliaDocSearch = require('AlgoliaDocSearch');
+var React = require('React');
 
 var HeaderLinks = React.createClass({
   linksInternal: [
-    {section: 'docs', href: 'docs/getting-started.html', text: 'Docs'},
-    {section: 'support', href: 'support.html', text: 'Support'},
-    {section: 'newsletter', href: 'http://reactnative.cc', text: 'Newsletter'},
-    {section: 'showcase', href: 'showcase.html', text: 'Showcase'},
+    {section: 'docs', href: 'docs/getting-started.html', text: 'Docs', target: '.nav-docs'},
+    {section: 'support', href: '/react-native/support.html', text: 'Help'},
+    {section: 'showcase', href: '/react-native/showcase.html', text: 'Showcase'},
+    {section: 'blog', href: '/react-native/blog/', text: 'Blog'},
   ],
   linksExternal: [
     {section: 'github', href: 'https://github.com/facebook/react-native', text: 'GitHub'},
@@ -30,7 +31,8 @@ var HeaderLinks = React.createClass({
         <li key={link.section}>
           <a
             href={link.href}
-            className={link.section === this.props.section ? 'active' : ''}>
+            className={link.section === this.props.section ? 'active' : ''}
+            data-target={link.target}>
             {link.text}
           </a>
         </li>

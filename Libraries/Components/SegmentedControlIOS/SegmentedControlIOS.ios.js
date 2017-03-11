@@ -12,17 +12,17 @@
 'use strict';
 
 var NativeMethodsMixin = require('NativeMethodsMixin');
-var NativeModules = require('NativeModules');
-var PropTypes = require('ReactPropTypes');
 var React = require('React');
 var StyleSheet = require('StyleSheet');
 var View = require('View');
 
 var requireNativeComponent = require('requireNativeComponent');
 
+var PropTypes = React.PropTypes;
+
 type DefaultProps = {
-  values: Array<string>;
-  enabled: boolean;
+  values: Array<string>,
+  enabled: boolean,
 };
 
 var SEGMENTED_CONTROL_REFERENCE = 'segmentedcontrol';
@@ -49,6 +49,7 @@ type Event = Object;
  * />
  * ````
  */
+// $FlowFixMe(>=0.41.0)
 var SegmentedControlIOS = React.createClass({
   mixins: [NativeMethodsMixin],
 
@@ -60,7 +61,7 @@ var SegmentedControlIOS = React.createClass({
     values: PropTypes.arrayOf(PropTypes.string),
 
     /**
-     * The index in `props.values` of the segment to be (pre)selected.  
+     * The index in `props.values` of the segment to be (pre)selected.
      */
     selectedIndex: PropTypes.number,
 
@@ -120,7 +121,7 @@ var SegmentedControlIOS = React.createClass({
 
 var styles = StyleSheet.create({
   segmentedControl: {
-    height: NativeModules.SegmentedControlManager.ComponentHeight
+    height: 28,
   },
 });
 

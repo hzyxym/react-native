@@ -18,10 +18,15 @@ import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.ReadableArray;
 import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.bridge.ReadableType;
-import com.facebook.react.devsupport.DevSupportManager;
+import com.facebook.react.devsupport.interfaces.DevSupportManager;
+import com.facebook.react.common.JavascriptException;
 import com.facebook.react.common.ReactConstants;
+import com.facebook.react.module.annotations.ReactModule;
 
+@ReactModule(name = ExceptionsManagerModule.NAME)
 public class ExceptionsManagerModule extends BaseJavaModule {
+
+  protected static final String NAME = "ExceptionsManager";
 
   static private final Pattern mJsModuleIdPattern = Pattern.compile("(?:^|[/\\\\])(\\d+\\.js)$");
   private final DevSupportManager mDevSupportManager;
@@ -32,7 +37,7 @@ public class ExceptionsManagerModule extends BaseJavaModule {
 
   @Override
   public String getName() {
-    return "RKExceptionsManager";
+    return NAME;
   }
 
   // If the file name of a stack frame is numeric (+ ".js"), we assume it's a lazily injected module
@@ -80,7 +85,11 @@ public class ExceptionsManagerModule extends BaseJavaModule {
 
   @ReactMethod
   public void reportSoftException(String title, ReadableArray details, int exceptionId) {
-    FLog.e(ReactConstants.TAG, stackTraceToString(title, details));
+    if (mDevSupportManager.getDevSupportEnabled()) {
+      mDevSupportManager.showNewJSError(title, details, exceptionId);
+    } else {
+      FLog.e(ReactConstants.TAG, stackTraceToString(title, details));
+    }
   }
 
   private void showOrThrowError(String title, ReadableArray details, int exceptionId) {
